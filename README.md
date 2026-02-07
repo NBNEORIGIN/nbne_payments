@@ -1,31 +1,58 @@
-# NBNE Payments - Reusable Django Payments App
+# NBNE Payments — Reusable Django Payments Module
 
-A standalone Django payments app with Stripe Checkout integration for handling payments on arbitrary "payable" objects (bookings, orders, invoices, etc.). Payments are optional per client instance.
+A generic, reusable Django payments module with Stripe Checkout integration. Designed as the payment backbone for a suite of business management apps (hair salons, fitness studios, restaurants, and more).
+
+## Live Demo
+
+| Component | URL |
+|---|---|
+| **Frontend** | https://nbne-payments-demo.netlify.app |
+| **Backend API** | https://web-production-4e861.up.railway.app/api/ |
+| **Django Admin** | https://web-production-4e861.up.railway.app/admin/ |
 
 ## Features
 
-- **Generic Payable Linkage**: Works with any object type (bookings, orders, etc.) without tight coupling
+- **Generic Payable Linkage**: Works with any object type via `payable_type` + `payable_id` — no tight coupling
 - **Stripe Checkout Integration**: Full Stripe Checkout Session creation and management
 - **Webhook Handler**: Idempotent webhook processing with signature verification
 - **Customer Management**: Automatic Stripe customer creation and linking
 - **Transaction Ledger**: Complete payment and refund tracking
+- **Internal Python API**: Consumer apps call functions directly (no HTTP self-calls, no deadlocks)
 - **Django Admin**: Full admin interface with filters and reporting
 - **Optional Payments**: Can be disabled per instance; bookings work without payments
+- **Next.js Frontend**: Modern booking UI with shadcn/ui components
+
+## Documentation
+
+- **[MODULE_SPEC.md](MODULE_SPEC.md)** — Complete technical specification, data models, API reference, and integration guide
+- **[AI_PROMPT_GUIDE.md](AI_PROMPT_GUIDE.md)** — Wiggum Loop prompts for AI-assisted development of new verticals (salon, fitness, restaurant, etc.)
 
 ## Project Structure
 
 ```
 nbne-payments/
-├── config/              # Django project settings
-├── payments/            # Reusable payments app
-│   ├── models.py       # Customer, PaymentSession, Transaction, Refund
-│   ├── views.py        # Checkout & webhook endpoints
-│   ├── admin.py        # Django admin configuration
-│   └── urls.py         # API routes
-├── bookings/            # Example integration app
-│   ├── models.py       # Booking model with PENDING_PAYMENT status
-│   ├── views.py        # Booking creation with payment flow
-│   └── urls.py         # Booking API routes
+├── config/                     # Django project settings
+│   ├── settings.py             # All settings, env vars, CORS, Stripe config
+│   ├── urls.py                 # Root URL routing
+│   └── wsgi.py                 # WSGI entry point
+├── payments/                   # GENERIC PAYMENTS MODULE (reusable, do not modify per-vertical)
+│   ├── models.py               # Customer, PaymentSession, Transaction, Refund
+│   ├── views.py                # Checkout, webhook, status (internal + HTTP APIs)
+│   ├── urls.py                 # /api/payments/ routes
+│   ├── admin.py                # Django admin config
+│   └── tests.py                # Unit tests
+├── bookings/                   # REFERENCE CONSUMER APP (use as template for new verticals)
+│   ├── models.py               # Booking model
+│   ├── views.py                # Booking CRUD + payment integration
+│   ├── urls.py                 # /api/bookings/ routes
+│   └── tests.py                # Unit tests
+├── frontend/                   # NEXT.JS FRONTEND
+│   ├── src/app/                # Pages: landing, booking form, success, cancel, lookup
+│   ├── src/lib/api.ts          # API client
+│   └── netlify.toml            # Netlify deployment config
+├── entrypoint.sh               # Railway startup (collectstatic, migrate, superuser, gunicorn)
+├── Procfile                    # Railway process definition
+├── requirements.txt            # Python dependencies
 └── manage.py
 ```
 
