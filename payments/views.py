@@ -12,18 +12,22 @@ from .models import Customer, PaymentSession, Transaction, Refund
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
 
-@csrf_exempt
-@require_http_methods(["POST"])
-def create_checkout_session(request):
+def create_checkout_session_internal(data):
+    """Create a Stripe Checkout Session. Callable from Python (no HTTP needed).
+    
+    Args:
+        data: dict with keys: payable_type, payable_id, amount_pence, currency,
+              success_url, cancel_url, idempotency_key, customer (dict), metadata (dict)
+    
+    Returns:
+        dict with keys: checkout_url, payment_session_id, status
+    
+    Raises:
+        ValueError: if required fields are missing or invalid
+        stripe.error.StripeError: if Stripe API call fails
+    """
     if not settings.PAYMENTS_ENABLED:
-        return JsonResponse({
-            'error': 'Payments are not enabled for this instance'
-        }, status=400)
-
-    try:
-        data = json.loads(request.body)
-    except json.JSONDecodeError:
-        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+        raise ValueError('Payments are not enabled for this instance')
 
     payable_type = data.get('payable_type')
     payable_id = data.get('payable_id')
@@ -36,22 +40,20 @@ def create_checkout_session(request):
     metadata = data.get('metadata', {})
 
     if not all([payable_type, payable_id, amount_pence, success_url, cancel_url, idempotency_key]):
-        return JsonResponse({
-            'error': 'Missing required fields: payable_type, payable_id, amount_pence, success_url, cancel_url, idempotency_key'
-        }, status=400)
+        raise ValueError('Missing required fields: payable_type, payable_id, amount_pence, success_url, cancel_url, idempotency_key')
 
     if amount_pence < 0:
-        return JsonResponse({'error': 'Amount must be >= 0'}, status=400)
+        raise ValueError('Amount must be >= 0')
 
     with transaction.atomic():
         existing_session = PaymentSession.objects.filter(idempotency_key=idempotency_key).first()
         if existing_session:
             checkout_url = f"https://checkout.stripe.com/c/pay/{existing_session.stripe_checkout_session_id}" if existing_session.stripe_checkout_session_id else None
-            return JsonResponse({
+            return {
                 'checkout_url': checkout_url,
                 'payment_session_id': str(existing_session.id),
                 'status': existing_session.status
-            })
+            }
 
         customer = None
         if customer_data and customer_data.get('email'):
@@ -88,54 +90,84 @@ def create_checkout_session(request):
             idempotency_key=idempotency_key,
         )
 
-        try:
-            checkout_metadata = {
-                'payable_type': payable_type,
-                'payable_id': str(payable_id),
-                'payment_session_id': str(payment_session.id),
-            }
-            checkout_metadata.update(metadata)
+        checkout_metadata = {
+            'payable_type': payable_type,
+            'payable_id': str(payable_id),
+            'payment_session_id': str(payment_session.id),
+        }
+        checkout_metadata.update(metadata)
 
-            stripe_session_params = {
-                'payment_method_types': ['card'],
-                'line_items': [{
-                    'price_data': {
-                        'currency': currency.lower(),
-                        'unit_amount': amount_pence,
-                        'product_data': {
-                            'name': f'{payable_type.title()} Payment',
-                            'description': f'Payment for {payable_type} #{payable_id}',
-                        },
+        stripe_session_params = {
+            'payment_method_types': ['card'],
+            'line_items': [{
+                'price_data': {
+                    'currency': currency.lower(),
+                    'unit_amount': amount_pence,
+                    'product_data': {
+                        'name': f'{payable_type.title()} Payment',
+                        'description': f'Payment for {payable_type} #{payable_id}',
                     },
-                    'quantity': 1,
-                }],
-                'mode': 'payment',
-                'success_url': success_url,
-                'cancel_url': cancel_url,
-                'metadata': checkout_metadata,
-            }
+                },
+                'quantity': 1,
+            }],
+            'mode': 'payment',
+            'success_url': success_url,
+            'cancel_url': cancel_url,
+            'metadata': checkout_metadata,
+        }
 
-            if customer and customer.provider_customer_id:
-                stripe_session_params['customer'] = customer.provider_customer_id
+        if customer and customer.provider_customer_id:
+            stripe_session_params['customer'] = customer.provider_customer_id
 
-            checkout_session = stripe.checkout.Session.create(**stripe_session_params)
+        checkout_session = stripe.checkout.Session.create(**stripe_session_params)
 
-            payment_session.stripe_checkout_session_id = checkout_session.id
-            payment_session.stripe_payment_intent_id = checkout_session.payment_intent
-            payment_session.status = 'pending'
-            payment_session.save(update_fields=['stripe_checkout_session_id', 'stripe_payment_intent_id', 'status'])
+        payment_session.stripe_checkout_session_id = checkout_session.id
+        payment_session.stripe_payment_intent_id = checkout_session.payment_intent
+        payment_session.status = 'pending'
+        payment_session.save(update_fields=['stripe_checkout_session_id', 'stripe_payment_intent_id', 'status'])
 
-            return JsonResponse({
-                'checkout_url': checkout_session.url,
-                'payment_session_id': str(payment_session.id),
-                'status': payment_session.status
-            })
+        return {
+            'checkout_url': checkout_session.url,
+            'payment_session_id': str(payment_session.id),
+            'status': payment_session.status
+        }
 
-        except stripe.error.StripeError as e:
-            payment_session.status = 'failed'
-            payment_session.metadata['error'] = str(e)
-            payment_session.save(update_fields=['status', 'metadata'])
-            return JsonResponse({'error': f'Stripe error: {str(e)}'}, status=400)
+
+def get_payment_status_internal(payment_session_id):
+    """Get payment status. Callable from Python (no HTTP needed).
+    
+    Returns:
+        dict with payment status info
+    
+    Raises:
+        PaymentSession.DoesNotExist: if not found
+    """
+    payment_session = PaymentSession.objects.get(id=payment_session_id)
+    return {
+        'payment_session_id': str(payment_session.id),
+        'payable_type': payment_session.payable_type,
+        'payable_id': payment_session.payable_id,
+        'status': payment_session.status,
+        'amount_pence': payment_session.amount_pence,
+        'currency': payment_session.currency,
+    }
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def create_checkout_session(request):
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+
+    try:
+        result = create_checkout_session_internal(data)
+        return JsonResponse(result)
+    except ValueError as e:
+        return JsonResponse({'error': str(e)}, status=400)
+    except stripe.error.StripeError as e:
+        return JsonResponse({'error': f'Stripe error: {str(e)}'}, status=400)
 
 
 @csrf_exempt

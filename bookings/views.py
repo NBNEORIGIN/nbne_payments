@@ -1,12 +1,12 @@
 import json
 import uuid
-import requests
 from django.conf import settings
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db import transaction
 from .models import Booking
+from payments.views import create_checkout_session_internal, get_payment_status_internal
 
 
 @csrf_exempt
@@ -73,29 +73,22 @@ def create_booking(request):
                     'idempotency_key': idempotency_key,
                 }
 
-                response = requests.post(
-                    f"{request.scheme}://{request.get_host()}/api/payments/checkout/",
-                    json=payment_data,
-                    timeout=10
-                )
+                payment_response = create_checkout_session_internal(payment_data)
+                return JsonResponse({
+                    'booking_id': booking.id,
+                    'status': booking.status,
+                    'checkout_url': payment_response.get('checkout_url'),
+                    'payment_session_id': payment_response.get('payment_session_id'),
+                }, status=201)
 
-                if response.status_code == 200:
-                    payment_response = response.json()
-                    return JsonResponse({
-                        'booking_id': booking.id,
-                        'status': booking.status,
-                        'checkout_url': payment_response.get('checkout_url'),
-                        'payment_session_id': payment_response.get('payment_session_id'),
-                    }, status=201)
-                else:
-                    booking.status = 'CANCELLED'
-                    booking.notes += f"\n[Payment creation failed: {response.text}]"
-                    booking.save()
-                    return JsonResponse({
-                        'error': 'Failed to create payment session',
-                        'booking_id': booking.id,
-                    }, status=400)
-
+            except ValueError as e:
+                booking.status = 'CANCELLED'
+                booking.notes += f"\n[Payment validation error: {str(e)}]"
+                booking.save()
+                return JsonResponse({
+                    'error': f'Payment validation error: {str(e)}',
+                    'booking_id': booking.id,
+                }, status=400)
             except Exception as e:
                 booking.status = 'CANCELLED'
                 booking.notes += f"\n[Payment error: {str(e)}]"
@@ -150,31 +143,23 @@ def confirm_booking_payment(request, booking_id):
         return JsonResponse({'error': 'payment_session_id required'}, status=400)
 
     try:
-        response = requests.get(
-            f"{request.scheme}://{request.get_host()}/api/payments/status/{payment_session_id}/",
-            timeout=5
-        )
+        payment_data = get_payment_status_internal(payment_session_id)
 
-        if response.status_code == 200:
-            payment_data = response.json()
-            
-            if payment_data.get('status') == 'succeeded' and payment_data.get('payable_id') == str(booking_id):
-                booking.status = 'CONFIRMED'
-                booking.save(update_fields=['status', 'updated_at'])
-                return JsonResponse({
-                    'booking_id': booking.id,
-                    'status': booking.status,
-                    'message': 'Payment confirmed, booking is now confirmed'
-                })
-            else:
-                return JsonResponse({
-                    'booking_id': booking.id,
-                    'status': booking.status,
-                    'payment_status': payment_data.get('status'),
-                    'message': 'Payment not yet completed'
-                })
+        if payment_data.get('status') == 'succeeded' and payment_data.get('payable_id') == str(booking_id):
+            booking.status = 'CONFIRMED'
+            booking.save(update_fields=['status', 'updated_at'])
+            return JsonResponse({
+                'booking_id': booking.id,
+                'status': booking.status,
+                'message': 'Payment confirmed, booking is now confirmed'
+            })
         else:
-            return JsonResponse({'error': 'Failed to verify payment status'}, status=400)
+            return JsonResponse({
+                'booking_id': booking.id,
+                'status': booking.status,
+                'payment_status': payment_data.get('status'),
+                'message': 'Payment not yet completed'
+            })
 
     except Exception as e:
         return JsonResponse({'error': f'Payment verification error: {str(e)}'}, status=500)

@@ -8,16 +8,13 @@ class BookingCreationTest(TestCase):
     def setUp(self):
         self.client = Client()
 
-    @patch('bookings.views.requests.post')
-    def test_booking_with_deposit_creates_pending_payment(self, mock_post):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
+    @patch('bookings.views.create_checkout_session_internal')
+    def test_booking_with_deposit_creates_pending_payment(self, mock_checkout):
+        mock_checkout.return_value = {
             'checkout_url': 'https://checkout.stripe.com/test',
             'payment_session_id': '42',
             'status': 'pending'
         }
-        mock_post.return_value = mock_response
 
         payload = {
             'customer_name': 'John Doe',
@@ -84,16 +81,13 @@ class BookingPaymentConfirmationTest(TestCase):
             status='PENDING_PAYMENT'
         )
 
-    @patch('bookings.views.requests.get')
-    def test_confirm_payment_updates_booking_status(self, mock_get):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
+    @patch('bookings.views.get_payment_status_internal')
+    def test_confirm_payment_updates_booking_status(self, mock_status):
+        mock_status.return_value = {
             'payment_session_id': '42',
             'payable_id': str(self.booking.id),
             'status': 'succeeded'
         }
-        mock_get.return_value = mock_response
 
         payload = {
             'payment_session_id': '42'
